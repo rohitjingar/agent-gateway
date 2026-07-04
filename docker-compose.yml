@@ -1,15 +1,102 @@
-# Phase 0 skeleton: just the gateway. Postgres, Redis, Jaeger, and the MCP
-# servers are added in the phases that first need them (kept honest — we don't
-# stand up infra we can't yet exercise).
+# Full stack: `docker compose up --build` brings up the gateway, two MCP servers,
+# and the backing infra (Postgres, Redis, Jaeger). The gateway image is built once
+# and reused for the servers (same package, different command).
 services:
-  gateway:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: gateway
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Jaeger UI at http://localhost:16686
+
+  files:
+    image: agent-gateway:local
+    command: ["python", "-m", "agent_gateway.mcp_servers.files_server"]
+    environment:
+      MCP_HOST: 0.0.0.0
+      PORT: "9101"
+      FILES_ROOT: /data
+    volumes:
+      - filesdata:/data
+    depends_on:
+      gateway-build:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',9101))==0 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  github:
+    image: agent-gateway:local
+    command: ["python", "-m", "agent_gateway.mcp_servers.github_server"]
+    environment:
+      MCP_HOST: 0.0.0.0
+      PORT: "9102"
+    depends_on:
+      gateway-build:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',9102))==0 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot service whose only job is to BUILD the shared image. Everything else
+  # references agent-gateway:local, so the build happens exactly once.
+  gateway-build:
     build:
       context: .
       dockerfile: docker/Dockerfile.gateway
+    image: agent-gateway:local
+    command: ["python", "-c", "print('image built')"]
+    restart: "no"
+
+  gateway:
+    image: agent-gateway:local
     ports:
       - "8000:8000"
     environment:
       GATEWAY_ENV: docker
+      GATEWAY_JWT_SECRET: change-me-in-real-deploys-0123456789abcdef
+      GATEWAY_UPSTREAMS: '[{"name":"files","url":"http://files:9101/mcp"},{"name":"github","url":"http://github:9102/mcp"}]'
+      GATEWAY_REDIS_URL: redis://redis:6379/0
+      GATEWAY_DATABASE_URL: postgresql://gateway:gateway@postgres:5432/gateway
+      GATEWAY_OTEL_ENABLED: "true"
+      GATEWAY_OTEL_ENDPOINT: http://jaeger:4318
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+      files:
+        condition: service_healthy
+      github:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -18,4 +105,8 @@ services:
         - import urllib.request as u,sys; sys.exit(0 if u.urlopen('http://localhost:8000/health').status==200 else 1)
       interval: 10s
       timeout: 3s
-      retries: 5
+      retries: 10
+
+volumes:
+  pgdata:
+  filesdata:
