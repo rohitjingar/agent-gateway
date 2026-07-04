@@ -10,6 +10,7 @@ dependencies = [
     "mcp>=1.9",
     "pydantic>=2.7",
     "pydantic-settings>=2.4",
+    "pyjwt>=2.9",
 ]
 
 [dependency-groups]
@@ -34,6 +35,18 @@ target-version = "py312"
 [tool.ruff.lint]
 # E/W pycodestyle, F pyflakes, I import-sorting, B bugbear, UP pyupgrade
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom relies on function calls in argument
+# defaults (Depends/Query/...). Whitelist them so B008 doesn't fire.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Security",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -27,12 +27,23 @@ DEFAULT_UPSTREAMS: list[Upstream] = [
     Upstream(name="github", url="http://127.0.0.1:9102/mcp"),
 ]
 
+# Placeholder secret for LOCAL DEV ONLY (>=32 bytes to satisfy HS256 guidance).
+# Production MUST override via GATEWAY_JWT_SECRET.
+DEV_INSECURE_SECRET = "dev-insecure-change-me-not-for-production!"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GATEWAY_", env_file=".env", extra="ignore")
 
     env: str = "local"
     upstreams: list[Upstream] = DEFAULT_UPSTREAMS
+
+    # --- auth (JWT / HS256) ---
+    jwt_secret: str = DEV_INSECURE_SECRET  # OVERRIDE via GATEWAY_JWT_SECRET in prod
+    jwt_algorithm: str = "HS256"
+    jwt_issuer: str = "agent-gateway"
+    access_token_ttl_minutes: int = 60
+    dev_auth: bool = True  # expose POST /auth/token to mint demo tokens
 
 
 @lru_cache
