@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from agent_gateway import __version__, telemetry
+from agent_gateway.approvals import ApprovalStore, build_approval_store
 from agent_gateway.audit import AuditSink, build_audit
 from agent_gateway.config import DEV_INSECURE_SECRET, get_settings
 from agent_gateway.rate_limit import RateLimiter, build_rate_limiter
@@ -29,6 +30,7 @@ def create_app(
     registry: ToolRegistry | None = None,
     rate_limiter: RateLimiter | None = None,
     audit: AuditSink | None = None,
+    approvals: ApprovalStore | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -55,6 +57,12 @@ def create_app(
             sink, pg_pool = await build_audit(settings)
         app.state.audit = sink
 
+        approval_pool = None
+        store = approvals
+        if store is None:
+            store, approval_pool = await build_approval_store(settings)
+        app.state.approvals = store
+
         try:
             yield
         finally:
@@ -62,6 +70,8 @@ def create_app(
                 await redis_client.aclose()
             if pg_pool is not None:
                 await pg_pool.close()
+            if approval_pool is not None:
+                await approval_pool.close()
 
     app = FastAPI(
         title="Agent Gateway",

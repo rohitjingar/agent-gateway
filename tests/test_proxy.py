@@ -53,12 +53,13 @@ def test_unknown_tool_is_404():
 
 
 def test_tool_error_propagates_as_200_with_is_error():
-    tools = [make_tool("github.delete_branch", "github", "delete_branch", destructive=True)]
-    results = {"github.delete_branch": FakeResult(is_error=True, text="refused")}
+    # files.write_file is NOT high-risk, so it executes and can report a tool error.
+    tools = [make_tool("files.write_file", "files", "write_file")]
+    results = {"files.write_file": FakeResult(is_error=True, text="disk full")}
     with _client(tools, results) as c:
         resp = c.post(
             "/tools/call",
-            json={"name": "github.delete_branch", "arguments": {"name": "main"}},
+            json={"name": "files.write_file", "arguments": {"path": "a", "content": "b"}},
             headers=auth_header("admin"),
         )
         assert resp.status_code == 200

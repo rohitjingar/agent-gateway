@@ -1,15 +1,16 @@
 """The gateway's core proxy surface: discover tools and invoke them.
 
 Every endpoint requires a valid JWT (authentication) and enforces per-tool RBAC
-(authorization). `/tools/call` additionally rate-limits per caller, wraps the work
-in an OpenTelemetry span (tool/role/outcome/latency attributes), and writes an
-audit record for *every* outcome via a single `finally` path.
+(authorization). `/tools/call` additionally: rate-limits per caller; diverts
+HIGH-RISK tools to the human-approval queue (HTTP 202, does NOT execute); wraps
+work in an OpenTelemetry span; and audits *every* outcome via one `finally` path.
 
-Error mapping (deliberate):
+Error / status mapping:
     no/invalid token      -> 401
     known tool, no access -> 403
     unknown tool          -> 404
     over quota            -> 429
+    high-risk tool        -> 202 pending_approval (queued, not executed)
     upstream unreachable  -> 502
     tool ran but failed   -> 200 with is_error=true
 """
@@ -18,14 +19,22 @@ from __future__ import annotations
 
 import logging
 from time import perf_counter
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from opentelemetry.trace import Status, StatusCode
 
+from agent_gateway.approvals import ApprovalStore, is_high_risk
 from agent_gateway.audit import AuditSink, build_record, hash_args
 from agent_gateway.auth import Principal, get_principal
-from agent_gateway.models import CallToolIn, CallToolOut, ToolInfo
+from agent_gateway.config import Settings
+from agent_gateway.models import (
+    CallToolIn,
+    CallToolOut,
+    PendingApprovalOut,
+    ToolInfo,
+    block_to_dict,
+)
 from agent_gateway.rate_limit import RateLimiter
 from agent_gateway.rbac import allowed_tools, is_allowed
 from agent_gateway.registry import ToolRegistry
@@ -47,11 +56,12 @@ def _audit(request: Request) -> AuditSink:
     return request.app.state.audit
 
 
-def _block_to_dict(block: Any) -> dict[str, Any]:
-    """Normalize an MCP content block (pydantic model) to a plain dict."""
-    if hasattr(block, "model_dump"):
-        return block.model_dump(mode="json")
-    return {"type": getattr(block, "type", "text"), "text": getattr(block, "text", None)}
+def _approvals(request: Request) -> ApprovalStore:
+    return request.app.state.approvals
+
+
+def _settings(request: Request) -> Settings:
+    return request.app.state.settings
 
 
 @router.get("/tools", tags=["gateway"], response_model=list[ToolInfo])
@@ -76,15 +86,18 @@ async def list_tools(
     ]
 
 
-@router.post("/tools/call", tags=["gateway"], response_model=CallToolOut)
+@router.post("/tools/call", tags=["gateway"])
 async def call_tool(
     request: Request,
     body: CallToolIn,
     principal: Principal = Depends(get_principal),
-) -> CallToolOut:
+):
+    """Returns CallToolOut (200) for normal calls, or PendingApprovalOut (202)
+    when a high-risk tool is queued for human approval."""
     reg = _registry(request)
     limiter = _rate_limiter(request)
     sink = _audit(request)
+    settings = _settings(request)
     tracer = get_tracer()
 
     with tracer.start_as_current_span("gateway.tools.call") as span:
@@ -112,6 +125,25 @@ async def call_tool(
                 outcome = "rate_limited"
                 raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
 
+            # HIGH-RISK: queue for a human instead of executing. Return 202 now.
+            if settings.approval_enabled and is_high_risk(body.name, tool.destructive, settings):
+                outcome = "pending_approval"
+                record = await _approvals(request).create(
+                    subject=principal.subject,
+                    role=principal.role,
+                    tool=body.name,
+                    arguments=body.arguments,
+                )
+                span.set_attribute("mcp.approval_id", record.id)
+                return JSONResponse(
+                    status_code=status.HTTP_202_ACCEPTED,
+                    content=PendingApprovalOut(
+                        approval_id=record.id,
+                        tool=body.name,
+                        message="high-risk tool requires human approval",
+                    ).model_dump(),
+                )
+
             try:
                 result = await reg.call(body.name, body.arguments)
             except Exception as exc:  # noqa: BLE001 - any upstream/transport failure -> 502
@@ -123,14 +155,14 @@ async def call_tool(
             return CallToolOut(
                 name=body.name,
                 is_error=is_error,
-                content=[_block_to_dict(b) for b in result.content],
+                content=[block_to_dict(b) for b in result.content],
                 structured=result.structuredContent,
             )
         finally:
             latency_ms = (perf_counter() - started) * 1000
             span.set_attribute("mcp.outcome", outcome)
             span.set_attribute("mcp.latency_ms", round(latency_ms, 2))
-            if outcome != "ok":
+            if outcome not in ("ok", "pending_approval"):
                 span.set_status(Status(StatusCode.ERROR, outcome))
             try:
                 await sink.record(

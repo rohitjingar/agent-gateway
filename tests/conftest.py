@@ -24,6 +24,7 @@ class FakeRegistry:
     def __init__(self, tools, results=None):
         self._tools = {t.namespaced_name: t for t in tools}
         self._results = results or {}
+        self.calls: list[tuple[str, dict]] = []  # records every executed call
 
     def list(self):
         return list(self._tools.values())
@@ -32,6 +33,7 @@ class FakeRegistry:
         return self._tools.get(name)
 
     async def call(self, name, arguments):
+        self.calls.append((name, arguments))
         result = self._results.get(name, FakeResult())
         if isinstance(result, Exception):
             raise result

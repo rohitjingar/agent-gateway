@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     otel_endpoint: str = "http://127.0.0.1:4318"  # OTLP/HTTP; Jaeger accepts this
     otel_service_name: str = "agent-gateway"
 
+    # --- human-in-the-loop approval ---
+    approval_enabled: bool = True
+    high_risk_tools: list[str] = ["github.delete_branch"]
+    high_risk_auto_destructive: bool = False  # also gate any destructive-hinted tool
+
 
 @lru_cache
 def get_settings() -> Settings:
