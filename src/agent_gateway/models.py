@@ -20,6 +20,7 @@ class ToolInfo(BaseModel):
     input_schema: dict[str, Any] = Field(default_factory=dict)
     read_only: bool = False
     destructive: bool = False
+    high_risk: bool = False  # requires human approval before it runs
 
 
 class CallToolIn(BaseModel):

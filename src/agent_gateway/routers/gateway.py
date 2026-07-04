@@ -70,6 +70,7 @@ async def list_tools(
     principal: Principal = Depends(get_principal),
 ) -> list[ToolInfo]:
     reg = _registry(request)
+    settings = _settings(request)
     tools = reg.list()
     allowed = set(allowed_tools(principal.role, [t.namespaced_name for t in tools]))
     return [
@@ -80,10 +81,38 @@ async def list_tools(
             input_schema=t.input_schema,
             read_only=t.read_only,
             destructive=t.destructive,
+            high_risk=settings.approval_enabled
+            and is_high_risk(t.namespaced_name, t.destructive, settings),
         )
         for t in tools
         if t.namespaced_name in allowed
     ]
+
+
+@router.get("/registry", tags=["gateway"])
+async def registry_view(
+    request: Request,
+    principal: Principal = Depends(get_principal),
+) -> dict:
+    """Discovery view: every upstream server and every tool, with risk + whether
+    the caller's role may use it. The service-registry snapshot."""
+    reg = _registry(request)
+    settings = _settings(request)
+    return {
+        "servers": reg.servers(),
+        "tools": [
+            {
+                "name": t.namespaced_name,
+                "server": t.server,
+                "read_only": t.read_only,
+                "destructive": t.destructive,
+                "high_risk": settings.approval_enabled
+                and is_high_risk(t.namespaced_name, t.destructive, settings),
+                "allowed": is_allowed(principal.role, t.namespaced_name),
+            }
+            for t in reg.list()
+        ],
+    }
 
 
 @router.post("/tools/call", tags=["gateway"])

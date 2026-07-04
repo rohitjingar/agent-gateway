@@ -45,6 +45,17 @@ def _audit(request: Request) -> AuditSink:
     return request.app.state.audit
 
 
+@router.post("/registry/refresh")
+async def refresh_registry(
+    request: Request,
+    _: Principal = Depends(require_admin),
+) -> dict:
+    """Re-discover upstream tools at runtime (servers can come/go without a restart)."""
+    reg = _registry(request)
+    await reg.refresh()
+    return {"tools": len(reg.list())}
+
+
 @router.get("/audit/recent")
 async def audit_recent(
     request: Request,

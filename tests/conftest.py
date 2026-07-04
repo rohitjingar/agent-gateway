@@ -29,6 +29,15 @@ class FakeRegistry:
     def list(self):
         return list(self._tools.values())
 
+    def servers(self):
+        counts: dict[str, int] = {}
+        for t in self._tools.values():
+            counts[t.server] = counts.get(t.server, 0) + 1
+        return [{"name": s, "url": f"http://{s}/mcp", "tool_count": n} for s, n in counts.items()]
+
+    async def refresh(self):
+        return None
+
     def get(self, name):
         return self._tools.get(name)
 

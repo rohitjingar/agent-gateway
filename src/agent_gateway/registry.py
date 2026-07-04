@@ -65,6 +65,16 @@ class ToolRegistry:
     def list(self) -> list[RegisteredTool]:
         return sorted(self._tools.values(), key=lambda t: t.namespaced_name)
 
+    def servers(self) -> list[dict]:
+        """Per-upstream summary for the discovery endpoint (name, url, tool count)."""
+        counts: dict[str, int] = {}
+        for tool in self._tools.values():
+            counts[tool.server] = counts.get(tool.server, 0) + 1
+        return [
+            {"name": up.name, "url": up.url, "tool_count": counts.get(up.name, 0)}
+            for up in self._upstreams
+        ]
+
     def get(self, namespaced_name: str) -> RegisteredTool | None:
         return self._tools.get(namespaced_name)
 
