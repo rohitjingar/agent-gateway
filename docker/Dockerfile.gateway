@@ -1,0 +1,22 @@
+# Gateway image. Base already ships uv + CPython 3.12, so builds are fast and
+# reproducible (same lockfile as local dev).
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+WORKDIR /app
+
+# --- Dependency layer (cached until pyproject/lock change) ---
+# Install ONLY third-party deps first, without our own package, so editing
+# source code doesn't bust the (slow) dependency layer.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+# --- Application layer ---
+COPY README.md ./
+COPY src ./src
+RUN uv sync --frozen --no-dev
+
+# Put the venv on PATH so `uvicorn` resolves without `uv run`.
+ENV PATH="/app/.venv/bin:$PATH"
+
+EXPOSE 8000
+CMD ["uvicorn", "agent_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,0 +1,21 @@
+# Phase 0 skeleton: just the gateway. Postgres, Redis, Jaeger, and the MCP
+# servers are added in the phases that first need them (kept honest — we don't
+# stand up infra we can't yet exercise).
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
+    ports:
+      - "8000:8000"
+    environment:
+      GATEWAY_ENV: docker
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request as u,sys; sys.exit(0 if u.urlopen('http://localhost:8000/health').status==200 else 1)
+      interval: 10s
+      timeout: 3s
+      retries: 5
