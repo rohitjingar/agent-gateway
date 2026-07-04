@@ -49,8 +49,19 @@ class FakeRegistry:
         return result
 
 
-def make_tool(ns, server, name, *, destructive=False, read_only=False) -> RegisteredTool:
-    return RegisteredTool(ns, server, name, "http://x/mcp", "desc", {}, destructive, read_only)
+def make_tool(ns, server, name, *, destructive=False, read_only=False, quarantined=False):
+    return RegisteredTool(
+        ns,
+        server,
+        name,
+        "http://x/mcp",
+        "desc",
+        {},
+        destructive,
+        read_only,
+        warnings=(["poison"] if quarantined else []),
+        quarantined=quarantined,
+    )
 
 
 DEMO_TOOLS = [

@@ -85,7 +85,7 @@ async def list_tools(
             and is_high_risk(t.namespaced_name, t.destructive, settings),
         )
         for t in tools
-        if t.namespaced_name in allowed
+        if t.namespaced_name in allowed and not t.quarantined
     ]
 
 
@@ -108,6 +108,8 @@ async def registry_view(
                 "destructive": t.destructive,
                 "high_risk": settings.approval_enabled
                 and is_high_risk(t.namespaced_name, t.destructive, settings),
+                "quarantined": t.quarantined,
+                "warnings": t.warnings,
                 "allowed": is_allowed(principal.role, t.namespaced_name),
             }
             for t in reg.list()
@@ -143,6 +145,13 @@ async def call_tool(
                 outcome = "unknown_tool"
                 raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown tool: {body.name}")
             span.set_attribute("mcp.tool.server", tool.server)
+
+            if tool.quarantined:
+                outcome = "quarantined"
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    f"tool {body.name!r} is quarantined (poisoning scan): {tool.warnings}",
+                )
 
             if not is_allowed(principal.role, body.name):
                 outcome = "denied"

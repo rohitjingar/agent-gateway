@@ -29,6 +29,7 @@ OUTCOMES = (
     "unknown_tool",
     "upstream_error",
     "pending_approval",
+    "quarantined",
 )
 
 

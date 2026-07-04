@@ -9,10 +9,11 @@ pattern applied to MCP tools.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from agent_gateway import mcp_client
 from agent_gateway.config import Upstream
+from agent_gateway.security import scan_description
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ class RegisteredTool:
     input_schema: dict
     destructive: bool
     read_only: bool
+    warnings: list[str] = field(default_factory=list)  # poisoning-scan hits
+    quarantined: bool = False  # hidden from discovery + blocked at call time
 
 
 class ToolRegistry:
@@ -49,6 +52,9 @@ class ToolRegistry:
             for t in tools:
                 ns = f"{up.name}{NAMESPACE_SEP}{t.name}"
                 ann = t.annotations
+                warnings = scan_description(t.description or "")
+                if warnings:
+                    log.warning("tool %r quarantined by poisoning scan: %s", ns, warnings)
                 discovered[ns] = RegisteredTool(
                     namespaced_name=ns,
                     server=up.name,
@@ -58,6 +64,8 @@ class ToolRegistry:
                     input_schema=t.inputSchema or {},
                     destructive=bool(getattr(ann, "destructiveHint", False)) if ann else False,
                     read_only=bool(getattr(ann, "readOnlyHint", False)) if ann else False,
+                    warnings=warnings,
+                    quarantined=bool(warnings),
                 )
             log.info("registered %d tools from upstream %r", len(tools), up.name)
         self._tools = discovered
