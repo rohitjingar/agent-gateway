@@ -45,6 +45,16 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 60
     dev_auth: bool = True  # expose POST /auth/token to mint demo tokens
 
+    # --- rate limiting (Redis token bucket) ---
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    rate_limit_enabled: bool = True
+    rate_limit_capacity: int = 20  # burst size
+    rate_limit_refill_per_sec: float = 5.0  # sustained rate
+
+    # --- audit log (Postgres) ---
+    database_url: str = "postgresql://gateway:gateway@127.0.0.1:5432/gateway"
+    audit_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:
