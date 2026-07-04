@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from agent_gateway import __version__
+from agent_gateway import __version__, telemetry
 from agent_gateway.audit import AuditSink, build_audit
 from agent_gateway.config import DEV_INSECURE_SECRET, get_settings
 from agent_gateway.rate_limit import RateLimiter, build_rate_limiter
@@ -77,6 +77,18 @@ def create_app(
     def health() -> dict[str, str]:
         """Liveness probe. Proves the process is up and serving — nothing more."""
         return {"status": "ok", "version": __version__}
+
+    # Tracing is set up at construction time (before serving) so the FastAPI
+    # ASGI middleware is in the stack. No-op unless GATEWAY_OTEL_ENABLED=true.
+    otel_settings = get_settings()
+    telemetry.setup_tracing(otel_settings)
+    if otel_settings.otel_enabled:
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+            FastAPIInstrumentor.instrument_app(app)
+        except Exception:  # noqa: BLE001
+            log.exception("FastAPI instrumentation failed")
 
     return app
 

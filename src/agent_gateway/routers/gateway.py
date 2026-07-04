@@ -1,7 +1,8 @@
 """The gateway's core proxy surface: discover tools and invoke them.
 
 Every endpoint requires a valid JWT (authentication) and enforces per-tool RBAC
-(authorization). `/tools/call` additionally rate-limits per caller and writes an
+(authorization). `/tools/call` additionally rate-limits per caller, wraps the work
+in an OpenTelemetry span (tool/role/outcome/latency attributes), and writes an
 audit record for *every* outcome via a single `finally` path.
 
 Error mapping (deliberate):
@@ -20,13 +21,15 @@ from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from opentelemetry.trace import Status, StatusCode
 
-from agent_gateway.audit import AuditSink, build_record
+from agent_gateway.audit import AuditSink, build_record, hash_args
 from agent_gateway.auth import Principal, get_principal
 from agent_gateway.models import CallToolIn, CallToolOut, ToolInfo
 from agent_gateway.rate_limit import RateLimiter
 from agent_gateway.rbac import allowed_tools, is_allowed
 from agent_gateway.registry import ToolRegistry
+from agent_gateway.telemetry import get_tracer
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,49 +85,63 @@ async def call_tool(
     reg = _registry(request)
     limiter = _rate_limiter(request)
     sink = _audit(request)
+    tracer = get_tracer()
 
-    started = perf_counter()
-    outcome = "ok"
-    try:
-        if reg.get(body.name) is None:
-            outcome = "unknown_tool"
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown tool: {body.name}")
-        if not is_allowed(principal.role, body.name):
-            outcome = "denied"
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                f"role {principal.role!r} may not call {body.name!r}",
-            )
-        if not await limiter.allow(principal.subject):
-            outcome = "rate_limited"
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
+    with tracer.start_as_current_span("gateway.tools.call") as span:
+        span.set_attribute("mcp.tool.name", body.name)
+        span.set_attribute("auth.subject", principal.subject)
+        span.set_attribute("auth.role", principal.role)
+        span.set_attribute("mcp.args_hash", hash_args(body.arguments))
 
+        started = perf_counter()
+        outcome = "ok"
         try:
-            result = await reg.call(body.name, body.arguments)
-        except Exception as exc:  # noqa: BLE001 - any upstream/transport failure -> 502
-            outcome = "upstream_error"
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"upstream error: {exc}") from exc
+            tool = reg.get(body.name)
+            if tool is None:
+                outcome = "unknown_tool"
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown tool: {body.name}")
+            span.set_attribute("mcp.tool.server", tool.server)
 
-        is_error = bool(result.isError)
-        outcome = "tool_error" if is_error else "ok"
-        return CallToolOut(
-            name=body.name,
-            is_error=is_error,
-            content=[_block_to_dict(b) for b in result.content],
-            structured=result.structuredContent,
-        )
-    finally:
-        latency_ms = (perf_counter() - started) * 1000
-        try:
-            await sink.record(
-                build_record(
-                    principal.subject,
-                    principal.role,
-                    body.name,
-                    body.arguments,
-                    outcome,
-                    latency_ms,
+            if not is_allowed(principal.role, body.name):
+                outcome = "denied"
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    f"role {principal.role!r} may not call {body.name!r}",
                 )
+            if not await limiter.allow(principal.subject):
+                outcome = "rate_limited"
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
+
+            try:
+                result = await reg.call(body.name, body.arguments)
+            except Exception as exc:  # noqa: BLE001 - any upstream/transport failure -> 502
+                outcome = "upstream_error"
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"upstream error: {exc}") from exc
+
+            is_error = bool(result.isError)
+            outcome = "tool_error" if is_error else "ok"
+            return CallToolOut(
+                name=body.name,
+                is_error=is_error,
+                content=[_block_to_dict(b) for b in result.content],
+                structured=result.structuredContent,
             )
-        except Exception:  # noqa: BLE001 - audit must never break the request path
-            log.exception("audit write failed")
+        finally:
+            latency_ms = (perf_counter() - started) * 1000
+            span.set_attribute("mcp.outcome", outcome)
+            span.set_attribute("mcp.latency_ms", round(latency_ms, 2))
+            if outcome != "ok":
+                span.set_status(Status(StatusCode.ERROR, outcome))
+            try:
+                await sink.record(
+                    build_record(
+                        principal.subject,
+                        principal.role,
+                        body.name,
+                        body.arguments,
+                        outcome,
+                        latency_ms,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - audit must never break the request path
+                log.exception("audit write failed")

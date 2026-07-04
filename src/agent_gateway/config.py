@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://gateway:gateway@127.0.0.1:5432/gateway"
     audit_enabled: bool = True
 
+    # --- observability (OpenTelemetry) ---
+    otel_enabled: bool = False  # set true in Docker; off locally so no collector is needed
+    otel_endpoint: str = "http://127.0.0.1:4318"  # OTLP/HTTP; Jaeger accepts this
+    otel_service_name: str = "agent-gateway"
+
 
 @lru_cache
 def get_settings() -> Settings:
