@@ -60,6 +60,15 @@ def create_app(
         if settings.env != "local" and settings.jwt_secret == DEV_INSECURE_SECRET:
             log.warning("GATEWAY_JWT_SECRET is the insecure default in a non-local env!")
 
+        # Apply DB migrations on startup (best-effort; build_* also self-heal in
+        # dev, so a missing DB degrades gracefully instead of crashing).
+        try:
+            from agent_gateway.migrate import run_migrations
+
+            await run_migrations(settings.database_url)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("migrations skipped (%s)", exc)
+
         # Policy (servers + roles + high-risk) from the DB, seeded from code
         # defaults; read-only fallback if the DB is unreachable.
         policy_pool = None
