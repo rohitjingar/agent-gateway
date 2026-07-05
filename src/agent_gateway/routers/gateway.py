@@ -189,6 +189,11 @@ async def call_tool(
 
             try:
                 result = await reg.call(body.name, body.arguments)
+            except TimeoutError as exc:
+                outcome = "upstream_timeout"
+                raise HTTPException(
+                    status.HTTP_504_GATEWAY_TIMEOUT, f"upstream timed out: {body.name}"
+                ) from exc
             except Exception as exc:  # noqa: BLE001 - any upstream/transport failure -> 502
                 outcome = "upstream_error"
                 raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"upstream error: {exc}") from exc

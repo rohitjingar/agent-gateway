@@ -28,6 +28,7 @@ OUTCOMES = (
     "rate_limited",
     "unknown_tool",
     "upstream_error",
+    "upstream_timeout",
     "pending_approval",
     "quarantined",
 )

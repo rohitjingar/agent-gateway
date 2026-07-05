@@ -76,3 +76,15 @@ def test_upstream_failure_is_502():
             headers=auth_header("admin"),
         )
         assert resp.status_code == 502
+
+
+def test_upstream_timeout_is_504():
+    tools = [make_tool("files.slow", "files", "slow")]
+    results = {"files.slow": TimeoutError()}
+    with _client(tools, results) as c:
+        resp = c.post(
+            "/tools/call",
+            json={"name": "files.slow", "arguments": {}},
+            headers=auth_header("admin"),
+        )
+        assert resp.status_code == 504

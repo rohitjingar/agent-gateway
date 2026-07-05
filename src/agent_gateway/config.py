@@ -65,6 +65,22 @@ class Settings(BaseSettings):
     high_risk_tools: list[str] = ["github.delete_branch"]
     high_risk_auto_destructive: bool = False  # also gate any destructive-hinted tool
 
+    # --- reliability / timeouts ---
+    upstream_timeout_seconds: float = 15.0  # bound each upstream MCP call
+
+    # --- identity provider (asymmetric verification) ---
+    # Set jwt_algorithm="RS256" + jwt_public_key=<PEM> to verify tokens minted by a
+    # real IdP (Okta/Auth0/Keycloak). HS256 + jwt_secret stays the local-dev default.
+    jwt_public_key: str | None = None
+
+    # --- multi-instance policy sync ---
+    policy_reload_channel: str = "agent-gateway:policy-reload"
+    policy_reload_interval_seconds: float = 30.0  # periodic fallback reload
+
+    # --- observability ---
+    metrics_enabled: bool = True
+    log_format: str = "text"  # "text" | "json"
+
 
 @lru_cache
 def get_settings() -> Settings:

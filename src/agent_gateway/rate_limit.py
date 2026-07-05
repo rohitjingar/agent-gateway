@@ -85,6 +85,9 @@ class RedisTokenBucket:
         self.refill = refill_per_sec
         self._sha: str | None = None
 
+    async def ping(self) -> None:
+        await self._redis.ping()
+
     async def allow(self, key: str, cost: int = 1) -> bool:
         if self._sha is None:
             self._sha = await self._redis.script_load(_LUA_TOKEN_BUCKET)

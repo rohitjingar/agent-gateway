@@ -111,6 +111,9 @@ class PolicyRepo:
                 await con.execute("INSERT INTO policy_meta(k, v) VALUES('seeded', '1')")
         return cls(pool)
 
+    async def ping(self) -> None:
+        await self._pool.execute("SELECT 1")
+
     async def load(self) -> LivePolicy:
         servers = await self._pool.fetch(
             "SELECT name, url FROM servers WHERE enabled ORDER BY name"

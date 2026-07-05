@@ -35,8 +35,9 @@ class RegisteredTool:
 
 
 class ToolRegistry:
-    def __init__(self, upstreams: list[Upstream]) -> None:
+    def __init__(self, upstreams: list[Upstream], timeout: float = 15.0) -> None:
         self._upstreams = upstreams
+        self._timeout = timeout
         self._tools: dict[str, RegisteredTool] = {}
 
     async def refresh(self) -> None:
@@ -45,7 +46,7 @@ class ToolRegistry:
         discovered: dict[str, RegisteredTool] = {}
         for up in self._upstreams:
             try:
-                tools = await mcp_client.list_tools(up.url)
+                tools = await mcp_client.list_tools(up.url, timeout=self._timeout)
             except Exception as exc:  # noqa: BLE001 - resilience: tolerate a down upstream
                 log.warning("upstream %r (%s) unavailable: %s", up.name, up.url, exc)
                 continue
@@ -97,4 +98,6 @@ class ToolRegistry:
         tool = self.get(namespaced_name)
         if tool is None:
             raise KeyError(namespaced_name)
-        return await mcp_client.call_tool(tool.url, tool.tool_name, arguments)
+        return await mcp_client.call_tool(
+            tool.url, tool.tool_name, arguments, timeout=self._timeout
+        )

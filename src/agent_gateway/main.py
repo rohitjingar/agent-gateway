@@ -11,7 +11,8 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from agent_gateway import __version__, telemetry
 from agent_gateway.approvals import ApprovalStore, build_approval_store
@@ -27,6 +28,22 @@ from agent_gateway.routers import gateway
 log = logging.getLogger(__name__)
 
 
+def _check_production_safety(settings) -> None:
+    """Refuse to start on insecure config when env == 'production' (fail closed)."""
+    if settings.env != "production":
+        return
+    problems = []
+    if settings.jwt_algorithm == "HS256":
+        if settings.jwt_secret == DEV_INSECURE_SECRET:
+            problems.append("JWT secret is the insecure default (set GATEWAY_JWT_SECRET)")
+        elif len(settings.jwt_secret) < 32:
+            problems.append("JWT secret is shorter than 32 bytes")
+    if settings.dev_auth:
+        problems.append("dev token endpoint is enabled (set GATEWAY_DEV_AUTH=false)")
+    if problems:
+        raise RuntimeError("insecure production config: " + "; ".join(problems))
+
+
 def create_app(
     registry: ToolRegistry | None = None,
     rate_limiter: RateLimiter | None = None,
@@ -38,6 +55,7 @@ def create_app(
     async def lifespan(app: FastAPI):
         settings = get_settings()
         app.state.settings = settings
+        _check_production_safety(settings)
         if settings.env != "local" and settings.jwt_secret == DEV_INSECURE_SECRET:
             log.warning("GATEWAY_JWT_SECRET is the insecure default in a non-local env!")
 
@@ -53,7 +71,7 @@ def create_app(
 
         reg = registry
         if reg is None:  # discover the tools of the policy's servers
-            reg = ToolRegistry(pol.servers)
+            reg = ToolRegistry(pol.servers, timeout=settings.upstream_timeout_seconds)
             await reg.refresh()
         app.state.registry = reg
 
@@ -101,6 +119,37 @@ def create_app(
     def health() -> dict[str, str]:
         """Liveness probe. Proves the process is up and serving — nothing more."""
         return {"status": "ok", "version": __version__}
+
+    @app.get("/ready", tags=["ops"])
+    async def ready(request: Request):
+        """Readiness probe: are our dependencies actually reachable? 200 or 503."""
+        checks: dict[str, object] = {}
+        ok = True
+
+        repo = getattr(request.app.state, "policy_repo", None)
+        if repo is not None:
+            try:
+                await repo.ping()
+                checks["database"] = "ok"
+            except Exception as exc:  # noqa: BLE001
+                checks["database"] = f"error: {exc}"
+                ok = False
+        else:
+            checks["database"] = "not_configured"
+
+        rl = request.app.state.rate_limiter
+        if hasattr(rl, "ping"):
+            try:
+                await rl.ping()
+                checks["redis"] = "ok"
+            except Exception as exc:  # noqa: BLE001
+                checks["redis"] = f"error: {exc}"
+                ok = False
+        else:
+            checks["redis"] = "not_configured"
+
+        checks["tools"] = len(request.app.state.registry.list())
+        return JSONResponse(status_code=200 if ok else 503, content={"ready": ok, "checks": checks})
 
     # Tracing is set up at construction time (before serving) so the FastAPI
     # ASGI middleware is in the stack. No-op unless GATEWAY_OTEL_ENABLED=true.

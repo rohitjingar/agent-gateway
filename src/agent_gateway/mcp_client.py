@@ -9,6 +9,7 @@ The gateway (Phase 2+) reuses these helpers to proxy tool calls.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -26,13 +27,18 @@ async def open_session(url: str):
             yield session
 
 
-async def list_tools(url: str) -> list[Tool]:
+async def list_tools(url: str, timeout: float = 15.0) -> list[Tool]:
     """The MCP ``tools/list`` verb: discover what an upstream can do."""
-    async with open_session(url) as session:
+    async with asyncio.timeout(timeout), open_session(url) as session:
         return (await session.list_tools()).tools
 
 
-async def call_tool(url: str, name: str, arguments: dict[str, Any]) -> CallToolResult:
-    """The MCP ``tools/call`` verb: invoke one tool with arguments."""
-    async with open_session(url) as session:
+async def call_tool(
+    url: str, name: str, arguments: dict[str, Any], timeout: float = 15.0
+) -> CallToolResult:
+    """The MCP ``tools/call`` verb: invoke one tool with arguments.
+
+    Bounded by ``timeout`` so a hung upstream can't hang the request (raises
+    TimeoutError, which the gateway maps to 504)."""
+    async with asyncio.timeout(timeout), open_session(url) as session:
         return await session.call_tool(name, arguments)
