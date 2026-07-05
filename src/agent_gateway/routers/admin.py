@@ -20,6 +20,7 @@ from agent_gateway.admin_ui import ADMIN_HTML
 from agent_gateway.audit import build_record
 from agent_gateway.auth import Principal, get_principal
 from agent_gateway.models import ApprovalOut, approval_to_out, call_result_payload
+from agent_gateway.policy import reload_into
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["admin"])
@@ -41,11 +42,14 @@ def _repo(request: Request):
 
 
 async def _reload_policy(request: Request) -> None:
-    """After a persisted edit: reload the snapshot and re-discover servers."""
-    request.app.state.policy = await request.app.state.policy_repo.load()
-    reg = request.app.state.registry
-    reg.set_upstreams(request.app.state.policy.servers)
-    await reg.refresh()
+    """After a persisted edit: reload locally, then tell other instances to reload."""
+    await reload_into(request.app)
+    sync = getattr(request.app.state, "policy_sync", None)
+    if sync is not None:
+        try:
+            await sync.publish(request.app.state.settings.policy_reload_channel, "reload")
+        except Exception:  # noqa: BLE001
+            log.exception("policy reload publish failed")
 
 
 # --------------------------- the admin UI page ---------------------------

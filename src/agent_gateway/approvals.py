@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import uuid4
 
+from agent_gateway.config import SCHEMA_LOCK_KEY
+
 log = logging.getLogger(__name__)
 
 
@@ -228,7 +230,9 @@ async def build_approval_store(settings) -> tuple[ApprovalStore, object | None]:
         import asyncpg
 
         pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
-        await pool.execute(_DDL)
+        async with pool.acquire() as con, con.transaction():
+            await con.execute("SELECT pg_advisory_xact_lock($1)", SCHEMA_LOCK_KEY)
+            await con.execute(_DDL)
     except Exception as exc:  # noqa: BLE001
         log.warning("Postgres unavailable (%s); approvals -> in-memory store", exc)
         return InMemoryApprovalStore(), None

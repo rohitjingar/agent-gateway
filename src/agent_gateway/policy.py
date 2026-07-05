@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from agent_gateway.config import Upstream
+from agent_gateway.config import SCHEMA_LOCK_KEY, Upstream
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +83,9 @@ class PolicyRepo:
     @classmethod
     async def create(cls, pool, seed: LivePolicy) -> PolicyRepo:
         """Create tables and, on a fresh DB, seed the rulebook from code defaults."""
-        async with pool.acquire() as con:
+        async with pool.acquire() as con, con.transaction():
+            # serialize DDL across replicas (concurrent CREATE TABLE IF NOT EXISTS can race)
+            await con.execute("SELECT pg_advisory_xact_lock($1)", SCHEMA_LOCK_KEY)
             await con.execute(_DDL)
             already = await con.fetchval("SELECT v FROM policy_meta WHERE k = 'seeded'")
             if not already:
@@ -108,7 +110,9 @@ class PolicyRepo:
                         " ON CONFLICT (tool_name) DO NOTHING",
                         tool,
                     )
-                await con.execute("INSERT INTO policy_meta(k, v) VALUES('seeded', '1')")
+                await con.execute(
+                    "INSERT INTO policy_meta(k, v) VALUES('seeded', '1') ON CONFLICT (k) DO NOTHING"
+                )
         return cls(pool)
 
     async def ping(self) -> None:
@@ -160,6 +164,18 @@ class PolicyRepo:
             )
         else:
             await self._pool.execute("DELETE FROM tool_risk WHERE tool_name = $1", tool)
+
+
+async def reload_into(app) -> None:
+    """Reload the policy snapshot from the DB and re-discover servers. Shared by
+    the admin edit path and the multi-instance sync tasks (no HTTP context)."""
+    repo = getattr(app.state, "policy_repo", None)
+    if repo is None:
+        return
+    app.state.policy = await repo.load()
+    reg = app.state.registry
+    reg.set_upstreams(app.state.policy.servers)
+    await reg.refresh()
 
 
 async def build_policy(settings) -> tuple[LivePolicy, PolicyRepo | None, object | None]:

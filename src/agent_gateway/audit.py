@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from agent_gateway.config import SCHEMA_LOCK_KEY
+
 log = logging.getLogger(__name__)
 
 # All the outcomes a call can end in — one vocabulary shared by handler + log.
@@ -172,7 +174,9 @@ async def build_audit(settings) -> tuple[AuditSink, object | None]:
         import asyncpg
 
         pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
-        await pool.execute(_DDL)
+        async with pool.acquire() as con, con.transaction():
+            await con.execute("SELECT pg_advisory_xact_lock($1)", SCHEMA_LOCK_KEY)
+            await con.execute(_DDL)
     except Exception as exc:  # noqa: BLE001 - fail open, keep serving
         log.warning("Postgres unavailable (%s); audit -> null sink", exc)
         return NullAuditSink(), None

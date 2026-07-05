@@ -8,6 +8,7 @@ on shutdown.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -18,7 +19,7 @@ from agent_gateway import __version__, telemetry
 from agent_gateway.approvals import ApprovalStore, build_approval_store
 from agent_gateway.audit import AuditSink, build_audit
 from agent_gateway.config import DEV_INSECURE_SECRET, get_settings
-from agent_gateway.policy import LivePolicy, build_policy
+from agent_gateway.policy import LivePolicy, build_policy, reload_into
 from agent_gateway.rate_limit import RateLimiter, build_rate_limiter
 from agent_gateway.registry import ToolRegistry
 from agent_gateway.routers import admin as admin_router
@@ -93,9 +94,51 @@ def create_app(
             store, approval_pool = await build_approval_store(settings)
         app.state.approvals = store
 
+        # Multi-instance policy sync: when one instance edits config it PUBLISHes a
+        # reload; every instance SUBSCRIBEs and reloads its snapshot. A periodic
+        # reload is the fallback when Redis pub/sub is unavailable.
+        sync_client = None
+        sync_tasks: list[asyncio.Task] = []
+        app.state.policy_sync = None
+        if repo is not None:
+
+            async def _do_reload() -> None:
+                try:
+                    await reload_into(app)
+                except Exception:  # noqa: BLE001
+                    log.exception("policy reload failed")
+
+            async def _periodic() -> None:
+                while True:
+                    await asyncio.sleep(settings.policy_reload_interval_seconds)
+                    await _do_reload()
+
+            sync_tasks.append(asyncio.create_task(_periodic()))
+            try:
+                import redis.asyncio as redis_async
+
+                sync_client = redis_async.from_url(settings.redis_url)
+                await sync_client.ping()
+                app.state.policy_sync = sync_client
+
+                async def _subscribe(client) -> None:
+                    pubsub = client.pubsub()
+                    await pubsub.subscribe(settings.policy_reload_channel)
+                    async for msg in pubsub.listen():
+                        if msg.get("type") == "message":
+                            await _do_reload()
+
+                sync_tasks.append(asyncio.create_task(_subscribe(sync_client)))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("policy pub/sub unavailable (%s); periodic reload only", exc)
+
         try:
             yield
         finally:
+            for task in sync_tasks:
+                task.cancel()
+            if sync_client is not None:
+                await sync_client.aclose()
             if redis_client is not None:
                 await redis_client.aclose()
             if pg_pool is not None:

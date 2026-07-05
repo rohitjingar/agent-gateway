@@ -31,6 +31,9 @@ DEFAULT_UPSTREAMS: list[Upstream] = [
 # Production MUST override via GATEWAY_JWT_SECRET.
 DEV_INSECURE_SECRET = "dev-insecure-change-me-not-for-production!"
 
+# Advisory-lock key so concurrent replicas don't race on CREATE TABLE at startup.
+SCHEMA_LOCK_KEY = 776622
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GATEWAY_", env_file=".env", extra="ignore")
