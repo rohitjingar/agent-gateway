@@ -12,13 +12,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from agent_gateway import __version__, telemetry
+from agent_gateway import __version__, metrics, telemetry
 from agent_gateway.approvals import ApprovalStore, build_approval_store
 from agent_gateway.audit import AuditSink, build_audit
 from agent_gateway.config import DEV_INSECURE_SECRET, get_settings
+from agent_gateway.logging_setup import configure_logging
 from agent_gateway.policy import LivePolicy, build_policy, reload_into
 from agent_gateway.rate_limit import RateLimiter, build_rate_limiter
 from agent_gateway.registry import ToolRegistry
@@ -52,6 +53,8 @@ def create_app(
     approvals: ApprovalStore | None = None,
     policy: LivePolicy | None = None,
 ) -> FastAPI:
+    configure_logging(get_settings())
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         settings = get_settings()
@@ -202,6 +205,14 @@ def create_app(
 
         checks["tools"] = len(request.app.state.registry.list())
         return JSONResponse(status_code=200 if ok else 503, content={"ready": ok, "checks": checks})
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint(request: Request):
+        """Prometheus scrape endpoint."""
+        if not request.app.state.settings.metrics_enabled:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "metrics disabled")
+        body, content_type = metrics.render()
+        return Response(content=body, media_type=content_type)
 
     # Tracing is set up at construction time (before serving) so the FastAPI
     # ASGI middleware is in the stack. No-op unless GATEWAY_OTEL_ENABLED=true.

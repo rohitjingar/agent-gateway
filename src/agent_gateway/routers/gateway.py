@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from opentelemetry.trace import Status, StatusCode
 
+from agent_gateway import metrics
 from agent_gateway.approvals import ApprovalStore
 from agent_gateway.audit import AuditSink, build_record, hash_args
 from agent_gateway.auth import Principal, get_principal
@@ -178,6 +179,7 @@ async def call_tool(
                     arguments=body.arguments,
                 )
                 span.set_attribute("mcp.approval_id", record.id)
+                metrics.record_approval("queued")
                 return JSONResponse(
                     status_code=status.HTTP_202_ACCEPTED,
                     content=PendingApprovalOut(
@@ -212,6 +214,7 @@ async def call_tool(
             span.set_attribute("mcp.latency_ms", round(latency_ms, 2))
             if outcome not in ("ok", "pending_approval"):
                 span.set_status(Status(StatusCode.ERROR, outcome))
+            metrics.record_tool_call(body.name, outcome, principal.role, latency_ms)
             try:
                 await sink.record(
                     build_record(

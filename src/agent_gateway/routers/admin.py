@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from agent_gateway import metrics
 from agent_gateway.admin_ui import ADMIN_HTML
 from agent_gateway.audit import build_record
 from agent_gateway.auth import Principal, get_principal
@@ -198,6 +199,7 @@ async def approve(
     updated = await store.set_result(approval_id, payload, outcome)
 
     await _record_decision(request, principal, claimed.tool, claimed.arguments, outcome, started)
+    metrics.record_approval("approved")
     return approval_to_out(updated)
 
 
@@ -209,6 +211,7 @@ async def deny(
     if rec is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "approval not found")
     await _record_decision(request, principal, rec.tool, rec.arguments, "denied", perf_counter())
+    metrics.record_approval("denied")
     return approval_to_out(rec)
 
 
