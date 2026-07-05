@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # Set jwt_algorithm="RS256" + jwt_public_key=<PEM> to verify tokens minted by a
     # real IdP (Okta/Auth0/Keycloak). HS256 + jwt_secret stays the local-dev default.
     jwt_public_key: str | None = None
+    jwt_audience: str | None = None  # verify the `aud` claim when your IdP sets one
 
     # --- multi-instance policy sync ---
     policy_reload_channel: str = "agent-gateway:policy-reload"
