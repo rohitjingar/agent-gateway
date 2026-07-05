@@ -1,0 +1,22 @@
+# Production overlay: apply ON TOP of docker-compose.yml to flip the gateway into
+# hardened mode. This is a template — point it at managed Postgres/Redis, put TLS
+# in front, and supply secrets from your secrets manager (NOT committed).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Run migrations once before rollout:
+#   docker compose run --rm gateway python -m agent_gateway.migrate
+services:
+  gateway:
+    environment:
+      GATEWAY_ENV: production # fail-closed startup checks
+      GATEWAY_DEV_AUTH: "false" # disable the dev token endpoint (use your IdP)
+      GATEWAY_LOG_FORMAT: json # structured logs for aggregators
+      GATEWAY_OTEL_ENABLED: "true"
+      # Supply these from your secrets manager / host env — do NOT hardcode:
+      GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET:?set a strong secret}
+      # For a real IdP instead of HS256, set:
+      #   GATEWAY_JWT_ALGORITHM: RS256
+      #   GATEWAY_JWT_PUBLIC_KEY: <PEM>
+      #   GATEWAY_JWT_ISSUER / GATEWAY_JWT_AUDIENCE
+    # TLS: terminate at a reverse proxy / ingress in front of this service.

@@ -149,9 +149,18 @@ All via `GATEWAY_*` env vars (see `config.py`): `GATEWAY_JWT_SECRET`,
 ## Tests
 
 ```bash
-uv run pytest          # in-memory, no infra needed
+uv run pytest          # unit suite, no infra needed
 uv run ruff check .    # lint
 ```
+CI additionally runs the suite against real Postgres + Redis service containers.
+
+## Production
+
+Readiness (`/ready`), Prometheus metrics (`/metrics`), structured JSON logs, upstream
+timeouts, versioned SQL migrations, RS256/IdP token verification, fail-closed prod
+startup, and config sync across replicas are all built in. See
+**[docs/PRODUCTION.md](docs/PRODUCTION.md)** for the full readiness map and how to flip
+on production mode (`docker-compose.prod.yml`).
 
 ---
 
@@ -177,8 +186,9 @@ uv run ruff check .    # lint
 - One Postgres for audit + approvals becomes the bottleneck → **partition audit
   to an append-only store (Kafka/ClickHouse)**, keep approvals transactional.
 - In-process registry refresh → **push-based service discovery** + health checks.
-- Single gateway instance → horizontal scale (the Redis token bucket is already
-  cross-worker-safe; JWT is stateless, so this mostly Just Works).
+- Single gateway instance → **horizontal scale is in place**: stateless JWT, a
+  cross-worker Redis token bucket, and config edits propagated to every replica via
+  Redis pub/sub. Remaining big lever: pool upstream sessions + offload high-volume audit.
 
 ## Interview narratives
 
