@@ -209,7 +209,60 @@ place to scan them because it sees every tool before any agent does."
 
 ---
 
-## 10. Cross-cutting patterns (worth naming explicitly)
+## 10. Config as data: the admin UI (post-spec extension)
+
+**The shift:** originally the rulebook (which servers, which role may call what,
+which tools are high-risk) lived in **code** (`config.py` + `rbac.py`) — changing it
+meant editing a file and redeploying. We moved it into the **database** so it's
+editable at runtime from a browser.
+
+**How (`policy.py`, `admin_ui.py`, `routers/admin.py`):**
+- `LivePolicy` is an in-memory snapshot the request path reads on every call (fast);
+  `PolicyRepo` reads/writes it to Postgres. A fresh DB is **seeded** from the code
+  defaults, so behaviour is unchanged out of the box.
+- The admin API (`/admin/*`) does CRUD on servers/roles/high-risk; each edit
+  persists, reloads the snapshot, and re-discovers upstreams.
+- `admin_ui.py` is a single self-contained HTML page over that API — no framework.
+
+**Backend analogy:** code = a value baked into the binary; DB-backed config = a value
+the process reads at runtime. The UI is just a screen that edits the DB rows.
+
+**Interview line:** "I moved policy from code to data so it's operable — a real admin
+edits rules from a console, not a pull request."
+
+---
+
+## 11. Hardening for production (the second pass)
+
+Once the core worked, a second pass added what a real deployment needs:
+
+- **Readiness vs liveness** — `/health` = "process up"; `/ready` = "deps actually
+  reachable" (DB + Redis), which is what a load balancer / k8s uses to decide whether
+  to route traffic.
+- **Timeouts** (`mcp_client.py`) — every upstream call is time-bounded → `504` on a
+  hung server instead of a hang. (Your circuit-breaker instinct.)
+- **Fail-closed startup** (`main._check_production_safety`) — in production the gateway
+  *refuses to boot* on insecure config (dev secret, dev login on): a misconfig fails
+  loudly instead of silently shipping an open door.
+- **Real identity provider** (`auth.py`) — verifies **RS256/ES256** tokens with an
+  IdP's public key (Okta/Auth0/Keycloak); the gateway holds no signing secret. HS256
+  stays for local dev.
+- **Multi-instance config sync** (`main.py`, `policy.py`) — a config edit on one replica
+  is **published on Redis pub/sub** and every replica reloads. (Fixed a real bug:
+  concurrent replicas racing on `CREATE TABLE` — serialized with a Postgres
+  **advisory lock**.)
+- **Migrations** (`migrate.py`, `migrations/`) — versioned SQL applied exactly once,
+  tracked in `schema_migrations`. Chose a raw-SQL runner over Alembic to avoid pulling
+  SQLAlchemy into a raw-asyncpg codebase.
+- **Metrics + structured logs** (`metrics.py`, `logging_setup.py`) — Prometheus
+  `/metrics` and JSON logs for aggregators.
+
+**Interview line:** "The first pass proved the security model; the second made it
+operable — readiness, IdP auth, migrations, metrics, and replica-safe config."
+
+---
+
+## 12. Cross-cutting patterns (worth naming explicitly)
 
 - **App factory + dependency injection.** `create_app(registry, rate_limiter,
   audit, approvals)` lets production build real collaborators and tests inject
@@ -226,35 +279,41 @@ place to scan them because it sees every tool before any agent does."
 
 ---
 
-## 11. One-line tour of every file (say these in an interview)
+## 13. One-line tour of every file (say these in an interview)
 
 **`src/agent_gateway/`**
 - `config.py` — all settings as typed fields from env (`GATEWAY_*`); no secrets in code.
-- `mcp_client.py` — thin async MCP client: `open_session`/`list_tools`/`call_tool`.
+- `mcp_client.py` — thin async MCP client (`open_session`/`list_tools`/`call_tool`), time-bounded.
 - `mcp_servers/files_server.py` — sandboxed filesystem MCP server (a real upstream).
 - `mcp_servers/github_server.py` — in-memory repo MCP server with a high-risk `delete_branch`.
 - `registry.py` — discovers upstreams, namespaces tools, runs the poisoning scan, forwards calls.
 - `security.py` — heuristic tool-description scanner (poisoning defense).
-- `auth.py` — JWT mint/verify → `Principal` (authentication).
-- `rbac.py` — role→tool policy with wildcards (authorization).
+- `auth.py` — verify JWT (HS256 dev / RS256 IdP) → `Principal`; mint dev tokens.
+- `rbac.py` — the default role→tool seed (the live policy now lives in the DB).
+- `policy.py` — DB-backed `LivePolicy` snapshot + `PolicyRepo` + cross-replica reload.
 - `rate_limit.py` — token bucket (atomic Redis Lua + in-memory).
 - `audit.py` — append-only audit sink (Postgres + in-memory), args hashed.
 - `approvals.py` — pending-state store + atomic claim (exactly-once approval).
 - `telemetry.py` — OpenTelemetry setup; no-op unless enabled.
+- `metrics.py` — Prometheus counters/histogram behind `/metrics`.
+- `logging_setup.py` — optional structured JSON logging.
+- `migrate.py` + `migrations/` — versioned SQL migrations, applied exactly once.
+- `admin_ui.py` — the self-contained admin console (HTML/JS over the admin API).
 - `models.py` — pydantic request/response models + result serializers.
 - `routers/gateway.py` — `/tools`, `/tools/call` (the enforcement pipeline), `/registry`.
 - `routers/auth.py` — dev-only `/auth/token`.
-- `routers/admin.py` — audit + approvals + registry-refresh (admin only).
-- `main.py` — app factory + lifespan (builds/injects/closes collaborators).
+- `routers/admin.py` — config CRUD, approvals, audit, and serves `/admin/ui` (admin only).
+- `main.py` — app factory + lifespan (migrations, collaborators, `/health` `/ready` `/metrics`, config-sync tasks).
 
-**Around it:** `docker-compose.yml` (one-command stack), `docker/Dockerfile.gateway`
-(uv-based, layer-cached), `scripts/demo.sh` (end-to-end tour),
-`scripts/mint_token.py`, `.github/workflows/ci.yml` (ruff + pytest gate), `tests/`
-(in-memory, no infra).
+**Around it:** `docker-compose.yml` (one-command stack) + `docker-compose.prod.yml`
+(hardened overlay), `docker/Dockerfile.gateway` (uv-based, layer-cached),
+`scripts/demo.sh` (end-to-end tour), `scripts/mint_token.py`,
+`.github/workflows/ci.yml` (ruff + pytest against real Postgres/Redis), `tests/`
+(unit in-memory + real-DB integration), `docs/PRODUCTION.md` (readiness map).
 
 ---
 
-## 12. The four interview narratives (memorize these)
+## 14. Interview narratives (memorize these)
 
 1. **Why a gateway, not direct agent→server?** One chokepoint = uniform auth,
    audit, limits, and a human gate in one place, in front of many servers.
@@ -262,7 +321,13 @@ place to scan them because it sees every tool before any agent does."
    `read_file` and `delete_branch` share a route but not a risk profile.
 3. **What did the MCP incidents teach?** Tool descriptions are attack surface;
    trust must be verified at a chokepoint, not assumed.
-4. **Where does it break at 100×?** Per-call MCP handshakes and one Postgres for
-   everything; fix with pooled upstream sessions and a partitioned append-only
-   audit store. JWT is stateless and the Redis bucket is cross-worker-safe, so the
-   gateway itself scales horizontally.
+4. **Why config as data + an admin UI?** Operability — a real admin edits rules
+   from a console, not a redeploy. It also forced solving replica consistency.
+5. **How does config stay consistent across replicas?** A Redis pub/sub reload
+   signal, plus an advisory lock so concurrent replicas don't race on schema creation.
+6. **Why raw-SQL migrations over Alembic?** Avoid pulling SQLAlchemy into a
+   raw-asyncpg codebase — a deliberate consistency call, not laziness.
+7. **Where does it break at 100×?** Per-call MCP handshakes and one Postgres for
+   everything; fix with pooled upstream sessions and a partitioned append-only audit
+   store. JWT is stateless, the Redis bucket is cross-worker-safe, and config syncs
+   across replicas — so the gateway itself scales horizontally.
