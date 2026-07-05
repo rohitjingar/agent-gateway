@@ -52,8 +52,8 @@ edge. This project applies that proven pattern to MCP.
 4. **Authorize** (per-tool RBAC) — role not allowed → `403`.
 5. **Rate limit** (Redis token bucket, per caller) — over quota → `429`.
 6. **High-risk?** → create a pending approval, return `202` (do **not** execute).
-7. **Proxy** to the owning MCP server; propagate the result.
-8. Always: emit an **OpenTelemetry span** and write an **audit record** (every outcome).
+7. **Proxy** to the owning MCP server (time-bounded → `504` on a hung upstream); propagate the result.
+8. Always: emit an **OpenTelemetry span**, a **Prometheus metric**, and an **audit record** (every outcome).
 
 ---
 
@@ -62,13 +62,18 @@ edge. This project applies that proven pattern to MCP.
 | Capability | What it does | Where |
 |---|---|---|
 | MCP proxy | Discovers upstreams, namespaces tools `<server>.<tool>`, forwards calls | `registry.py`, `routers/gateway.py` |
-| JWT auth | HS256 bearer verification → principal | `auth.py` |
-| Per-tool RBAC | `role → allowed tools` (wildcards), finer than route-based | `rbac.py` |
+| JWT auth | HS256 (dev) or RS256/ES256 IdP verification → principal | `auth.py` |
+| Per-tool RBAC | `role → allowed tools` (wildcards), DB-backed + UI-editable | `policy.py`, `rbac.py` |
 | Rate limiting | Redis token bucket (atomic Lua); fail-open | `rate_limit.py` |
 | Audit log | Append-only Postgres record (args **hashed**), every outcome | `audit.py` |
 | Tracing | OTLP → Jaeger; span per call with AI attributes | `telemetry.py` |
 | Human approval | High-risk tools queue for approve/deny; exactly-once execution | `approvals.py`, `routers/admin.py` |
 | Poisoning defense | Scan tool descriptions; quarantine suspicious tools | `security.py` |
+| Self-serve admin UI | Manage servers/roles/high-risk + approvals + audit from the browser | `admin_ui.py`, `routers/admin.py` |
+| Observability ops | `/ready` probe, Prometheus `/metrics`, JSON logs | `metrics.py`, `logging_setup.py` |
+| Reliability | Upstream timeouts (504), fail-closed prod startup | `mcp_client.py`, `main.py` |
+| Migrations | Versioned SQL, exactly-once (`python -m agent_gateway.migrate`) | `migrate.py`, `migrations/` |
+| Horizontal scale | Config sync across replicas (Redis pub/sub) | `main.py`, `policy.py` |
 
 ---
 
@@ -128,6 +133,8 @@ Mint a token: `uv run python scripts/mint_token.py alice developer`, or
 | Method + path | Role | Purpose |
 |---|---|---|
 | `GET /health` | public | liveness |
+| `GET /ready` | public | readiness (DB + Redis reachable) |
+| `GET /metrics` | public | Prometheus metrics |
 | `POST /auth/token` | public (dev) | mint a demo JWT |
 | `GET /tools` | any | tools the caller may use (+ `high_risk` flag) |
 | `POST /tools/call` | any | invoke a tool (or queue it if high-risk) |
@@ -144,7 +151,10 @@ Mint a token: `uv run python scripts/mint_token.py alice developer`, or
 All via `GATEWAY_*` env vars (see `config.py`): `GATEWAY_JWT_SECRET`,
 `GATEWAY_UPSTREAMS` (JSON), `GATEWAY_REDIS_URL`, `GATEWAY_DATABASE_URL`,
 `GATEWAY_OTEL_ENABLED`/`_ENDPOINT`, `GATEWAY_RATE_LIMIT_*`,
-`GATEWAY_HIGH_RISK_TOOLS`, `GATEWAY_APPROVAL_ENABLED`.
+`GATEWAY_HIGH_RISK_TOOLS`, `GATEWAY_APPROVAL_ENABLED`. Production toggles
+(`GATEWAY_ENV`, `GATEWAY_DEV_AUTH`, `GATEWAY_JWT_ALGORITHM`, `GATEWAY_JWT_PUBLIC_KEY`,
+`GATEWAY_LOG_FORMAT`, `GATEWAY_METRICS_ENABLED`, `GATEWAY_UPSTREAM_TIMEOUT_SECONDS`) are
+documented in **[docs/PRODUCTION.md](docs/PRODUCTION.md)**.
 
 ## Tests
 
