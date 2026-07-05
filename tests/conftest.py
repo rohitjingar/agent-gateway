@@ -38,6 +38,9 @@ class FakeRegistry:
     async def refresh(self):
         return None
 
+    def set_upstreams(self, upstreams):
+        return None
+
     def get(self, name):
         return self._tools.get(name)
 

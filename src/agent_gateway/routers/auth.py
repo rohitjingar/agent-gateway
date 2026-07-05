@@ -10,7 +10,6 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
 from agent_gateway.auth import create_access_token
-from agent_gateway.rbac import ROLE_POLICY
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -30,10 +29,11 @@ async def mint_token(request: Request, body: TokenRequest) -> TokenResponse:
     settings = request.app.state.settings
     if not settings.dev_auth:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "dev token endpoint disabled")
-    if body.role not in ROLE_POLICY:
+    known_roles = request.app.state.policy.roles()
+    if body.role not in known_roles:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            f"unknown role {body.role!r}; known roles: {sorted(ROLE_POLICY)}",
+            f"unknown role {body.role!r}; known roles: {known_roles}",
         )
     token = create_access_token(body.subject, body.role, settings)
     return TokenResponse(access_token=token)

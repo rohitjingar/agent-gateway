@@ -81,12 +81,23 @@ docker compose up --build -d
 # 2. Walk through auth, RBAC, rate limiting, and the approval flow
 ./scripts/demo.sh
 
-# 3. See the traces
+# 3. Open the self-serve admin console (servers, roles, high-risk, approvals, audit)
+open http://localhost:8000/admin/ui
+
+# 4. See the traces
 open http://localhost:16686        # Jaeger UI, service "agent-gateway"
 
-# 4. Tear down
+# 5. Tear down
 docker compose down -v
 ```
+
+### Admin UI (no code edits needed)
+
+`/admin/ui` is a self-serve console: add/remove upstream **servers**, edit **role
+permissions**, toggle which tools are **high-risk**, work the **approvals inbox**,
+and read the **audit log** — all from the browser. Config is stored in Postgres
+(seeded once from the code defaults), so **point `GATEWAY_DATABASE_URL` at your own
+database and all your config lives in your DB**, editable at runtime with no restart.
 
 Local dev without Docker (uv):
 
@@ -125,6 +136,8 @@ Mint a token: `uv run python scripts/mint_token.py alice developer`, or
 | `GET /audit/recent` | admin | recent audit records |
 | `GET /approvals?status=pending` | admin | the approval queue |
 | `POST /approvals/{id}/approve` \| `/deny` | admin | decide a pending call |
+| `GET /admin/ui` | public page | self-serve admin console |
+| `GET /admin/config` · `POST /admin/servers` · `PUT /admin/roles/{role}` · `PUT /admin/tools/{tool}/high-risk` | admin | manage servers / roles / risk (DB-backed) |
 
 ## Configuration
 
@@ -149,8 +162,9 @@ uv run ruff check .    # lint
 - **Fail-open on Redis/Postgres.** If Redis is down, rate limiting is skipped; if
   Postgres is down, audit falls back to a null sink. This favors availability. A
   stricter deployment would fail *closed* for audit (a security control).
-- **RBAC policy is a code dict**, not a database/policy engine. Fine for one team;
-  a real multi-tenant system wants a DB table or OPA.
+- **Servers / roles / high-risk are DB-backed and UI-editable** (seeded from the
+  code defaults). A larger deployment might swap in a real policy engine (OPA) and
+  a real admin login (the dev token endpoint is a stand-in).
 - **Poisoning scan is heuristic**, not a guarantee — a first line of defense that
   can false-positive; it quarantines for human review rather than auto-trusting.
 - **Approval polling, not push.** The agent polls `GET /approvals/{id}`; a

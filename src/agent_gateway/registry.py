@@ -70,6 +70,11 @@ class ToolRegistry:
             log.info("registered %d tools from upstream %r", len(tools), up.name)
         self._tools = discovered
 
+    def set_upstreams(self, upstreams: list[Upstream]) -> None:
+        """Replace the upstream list (used when the admin edits servers at runtime).
+        Call refresh() afterwards to re-discover tools."""
+        self._upstreams = upstreams
+
     def list(self) -> list[RegisteredTool]:
         return sorted(self._tools.values(), key=lambda t: t.namespaced_name)
 

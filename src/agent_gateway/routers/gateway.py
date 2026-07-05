@@ -1,9 +1,9 @@
 """The gateway's core proxy surface: discover tools and invoke them.
 
-Every endpoint requires a valid JWT (authentication) and enforces per-tool RBAC
-(authorization). `/tools/call` additionally: rate-limits per caller; diverts
-HIGH-RISK tools to the human-approval queue (HTTP 202, does NOT execute); wraps
-work in an OpenTelemetry span; and audits *every* outcome via one `finally` path.
+Every endpoint requires a valid JWT (authentication) and enforces per-tool
+authorization from the live policy (which is DB-backed and editable from the admin
+UI). `/tools/call` also rate-limits, diverts HIGH-RISK tools to the approval queue
+(202, not executed), traces the call, and audits every outcome.
 
 Error / status mapping:
     no/invalid token      -> 401
@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from opentelemetry.trace import Status, StatusCode
 
-from agent_gateway.approvals import ApprovalStore, is_high_risk
+from agent_gateway.approvals import ApprovalStore
 from agent_gateway.audit import AuditSink, build_record, hash_args
 from agent_gateway.auth import Principal, get_principal
 from agent_gateway.config import Settings
@@ -35,8 +35,8 @@ from agent_gateway.models import (
     ToolInfo,
     block_to_dict,
 )
+from agent_gateway.policy import LivePolicy
 from agent_gateway.rate_limit import RateLimiter
-from agent_gateway.rbac import allowed_tools, is_allowed
 from agent_gateway.registry import ToolRegistry
 from agent_gateway.telemetry import get_tracer
 
@@ -64,15 +64,20 @@ def _settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
+def _policy(request: Request) -> LivePolicy:
+    return request.app.state.policy
+
+
 @router.get("/tools", tags=["gateway"], response_model=list[ToolInfo])
 async def list_tools(
     request: Request,
     principal: Principal = Depends(get_principal),
 ) -> list[ToolInfo]:
     reg = _registry(request)
+    policy = _policy(request)
     settings = _settings(request)
     tools = reg.list()
-    allowed = set(allowed_tools(principal.role, [t.namespaced_name for t in tools]))
+    allowed = set(policy.allowed_tools(principal.role, [t.namespaced_name for t in tools]))
     return [
         ToolInfo(
             name=t.namespaced_name,
@@ -81,8 +86,7 @@ async def list_tools(
             input_schema=t.input_schema,
             read_only=t.read_only,
             destructive=t.destructive,
-            high_risk=settings.approval_enabled
-            and is_high_risk(t.namespaced_name, t.destructive, settings),
+            high_risk=settings.approval_enabled and policy.is_tool_high_risk(t.namespaced_name),
         )
         for t in tools
         if t.namespaced_name in allowed and not t.quarantined
@@ -95,8 +99,9 @@ async def registry_view(
     principal: Principal = Depends(get_principal),
 ) -> dict:
     """Discovery view: every upstream server and every tool, with risk + whether
-    the caller's role may use it. The service-registry snapshot."""
+    the caller's role may use it."""
     reg = _registry(request)
+    policy = _policy(request)
     settings = _settings(request)
     return {
         "servers": reg.servers(),
@@ -107,10 +112,10 @@ async def registry_view(
                 "read_only": t.read_only,
                 "destructive": t.destructive,
                 "high_risk": settings.approval_enabled
-                and is_high_risk(t.namespaced_name, t.destructive, settings),
+                and policy.is_tool_high_risk(t.namespaced_name),
                 "quarantined": t.quarantined,
                 "warnings": t.warnings,
-                "allowed": is_allowed(principal.role, t.namespaced_name),
+                "allowed": policy.is_allowed(principal.role, t.namespaced_name),
             }
             for t in reg.list()
         ],
@@ -129,6 +134,7 @@ async def call_tool(
     limiter = _rate_limiter(request)
     sink = _audit(request)
     settings = _settings(request)
+    policy = _policy(request)
     tracer = get_tracer()
 
     with tracer.start_as_current_span("gateway.tools.call") as span:
@@ -152,8 +158,7 @@ async def call_tool(
                     status.HTTP_403_FORBIDDEN,
                     f"tool {body.name!r} is quarantined (poisoning scan): {tool.warnings}",
                 )
-
-            if not is_allowed(principal.role, body.name):
+            if not policy.is_allowed(principal.role, body.name):
                 outcome = "denied"
                 raise HTTPException(
                     status.HTTP_403_FORBIDDEN,
@@ -164,7 +169,7 @@ async def call_tool(
                 raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
 
             # HIGH-RISK: queue for a human instead of executing. Return 202 now.
-            if settings.approval_enabled and is_high_risk(body.name, tool.destructive, settings):
+            if settings.approval_enabled and policy.is_tool_high_risk(body.name):
                 outcome = "pending_approval"
                 record = await _approvals(request).create(
                     subject=principal.subject,

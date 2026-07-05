@@ -17,6 +17,7 @@ from agent_gateway import __version__, telemetry
 from agent_gateway.approvals import ApprovalStore, build_approval_store
 from agent_gateway.audit import AuditSink, build_audit
 from agent_gateway.config import DEV_INSECURE_SECRET, get_settings
+from agent_gateway.policy import LivePolicy, build_policy
 from agent_gateway.rate_limit import RateLimiter, build_rate_limiter
 from agent_gateway.registry import ToolRegistry
 from agent_gateway.routers import admin as admin_router
@@ -31,6 +32,7 @@ def create_app(
     rate_limiter: RateLimiter | None = None,
     audit: AuditSink | None = None,
     approvals: ApprovalStore | None = None,
+    policy: LivePolicy | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -39,9 +41,19 @@ def create_app(
         if settings.env != "local" and settings.jwt_secret == DEV_INSECURE_SECRET:
             log.warning("GATEWAY_JWT_SECRET is the insecure default in a non-local env!")
 
+        # Policy (servers + roles + high-risk) from the DB, seeded from code
+        # defaults; read-only fallback if the DB is unreachable.
+        policy_pool = None
+        pol = policy
+        repo = None
+        if pol is None:
+            pol, repo, policy_pool = await build_policy(settings)
+        app.state.policy = pol
+        app.state.policy_repo = repo
+
         reg = registry
-        if reg is None:  # production path: discover upstreams
-            reg = ToolRegistry(settings.upstreams)
+        if reg is None:  # discover the tools of the policy's servers
+            reg = ToolRegistry(pol.servers)
             await reg.refresh()
         app.state.registry = reg
 
@@ -72,6 +84,8 @@ def create_app(
                 await pg_pool.close()
             if approval_pool is not None:
                 await approval_pool.close()
+            if policy_pool is not None:
+                await policy_pool.close()
 
     app = FastAPI(
         title="Agent Gateway",

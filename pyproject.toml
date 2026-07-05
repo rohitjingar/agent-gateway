@@ -54,6 +54,10 @@ extend-immutable-calls = [
     "fastapi.Security",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# admin_ui.py is an embedded HTML/CSS/JS blob — line length doesn't apply.
+"src/agent_gateway/admin_ui.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -q"
