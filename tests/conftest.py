@@ -3,10 +3,18 @@ tests run with no real MCP server and no network."""
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 from agent_gateway.auth import create_access_token
 from agent_gateway.registry import RegisteredTool
+
+# Isolate the unit suite from any ambient Postgres/Redis (e.g. CI service
+# containers on localhost): pin the APP's settings to unreachable endpoints so
+# create_app() always exercises the no-infra fallbacks. The DB-path integration
+# tests connect via TEST_DATABASE_URL / TEST_REDIS_URL directly instead.
+os.environ["GATEWAY_DATABASE_URL"] = "postgresql://gateway:gateway@127.0.0.1:1/nodb"
+os.environ["GATEWAY_REDIS_URL"] = "redis://127.0.0.1:1/0"
 
 
 class FakeResult:
